@@ -1,0 +1,5 @@
+node_modules
+secret/*
+config.json
+db.sqlite3
+access.log

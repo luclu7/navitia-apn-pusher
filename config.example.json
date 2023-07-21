@@ -1,0 +1,17 @@
+{
+    "apiKey": "your IDFM PRIM API key",
+    "apn": {
+        "token": {
+            "key": "./secret/AuthKey_yourkey.p8",
+            "keyId": "yourkeyid",
+            "teamId": "yourteamid"
+        },
+        "production": false
+    },
+    "notifications": {
+        "topic": "com.example.yourapp"
+    },
+    "port": 3000,
+    "ip": "127.0.0.1",
+    "dbPath": "./db.sqlite3"
+}

@@ -1,0 +1,21 @@
+{
+  "name": "navitia-perturbation-pusher",
+  "version": "1.0.0",
+  "description": "Push disruptions to APN from Navitia",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js"
+  },
+  "author": "luclu7",
+  "license": "Unlicense",
+  "dependencies": {
+    "@parse/node-apn": "^5.2.1",
+    "express": "^4.18.2",
+    "morgan": "^1.10.0",
+    "node-html-markdown": "^1.3.0",
+    "pino": "^8.14.1",
+    "pino-pretty": "^10.0.1",
+    "sqlite3": "^5.1.6"
+  }
+}
