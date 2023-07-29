@@ -1,3 +1,6 @@
+const fs = require('fs');
+const config = JSON.parse(fs.readFileSync('config.json', 'utf-8'))
+
 // sql
 const sqlite3 = require('sqlite3').verbose();
 
@@ -6,10 +9,11 @@ const NodeHtmlMarkdown = require("node-html-markdown");
 
 const nhm = new NodeHtmlMarkdown.NodeHtmlMarkdown();
 
-const fs = require('fs');
-
 // express
 const express = require('express');
+
+// auth
+const basicAuth = require('express-basic-auth')
 // logging
 const morgan = require('morgan');
 const pino = require('pino')
@@ -17,7 +21,6 @@ const pino = require('pino')
 // Apple Push Notification Service
 const apn = require("@parse/node-apn");
 
-const config = JSON.parse(fs.readFileSync('config.json', 'utf-8'))
 
 // init APN
 let apnProvider = new apn.Provider(config.apn);
@@ -32,7 +35,7 @@ const logger = pino({
 // Navitia IDFM
 const api = "https://prim.iledefrance-mobilites.fr/marketplace/navitia/coverage/fr-idf/lines?filter=(physical_mode.id=physical_mode:RapidTransit)%20or%20(physical_mode.id=physical_mode:LocalTrain)%20or%20(physical_mode.id=physical_mode:Tramway)&count=50&disable_geojson=true"
 
-if(!config.apiKey) {
+if (!config.apiKey) {
     logger.error("No navitia key (apiKey) was found in the config file")
     return process.exit(1)
 }
@@ -58,6 +61,8 @@ db.get(
             db.run(
                 `CREATE TABLE disruptions (
               id TEXT PRIMARY KEY,
+              disruption_id TEXT,
+              impact_id TEXT,
               status TEXT,
               line TEXT,
               start_date TEXT,
@@ -91,6 +96,7 @@ db.get(
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               token TEXT,
               line TEXT,
+              date_subscribed INTEGER DEFAULT (strftime('%s', 'now')),
 
               UNIQUE(token, line)
               )`,
@@ -123,6 +129,9 @@ function sendNotification(tokens, title, alert) {
 
 function addAndSendNotification(disruption) {
     const disruption_id = disruption.id;
+    const disruption_disruption_id = disruption.disruption_id;
+    const disruption_impact_id = disruption.impact_id;
+
     const disruption_status = disruption.status;
 
     const disruption_linesCode = disruption.impacted_objects.map(
@@ -161,28 +170,39 @@ function addAndSendNotification(disruption) {
             if (!row) {
                 console.log("Inserting new disruption " + disruption_id);
 
-                // get the affected users tokens and send them a notification
-                db.all(
-                    `SELECT token FROM subscriptions WHERE line = ?`,
-                    [disruption_line],
-                    (err, rows) => {
+                // check if we already have a previous disruption with the same disruption_id, don't send a notification if it's the case
+                db.get(
+                    `SELECT id FROM disruptions WHERE disruption_id = ?`,
+                    [disruption_disruption_id],
+                    (err, row) => {
                         if (err) {
                             return logger.error(err.message);
                         }
-                        // make an array of all the tokens
-                        const tokens = rows.map((row) => row.token);
-                        
-                        if (tokens.length == 0) return logger.info("No one is subscribed to this line")
-                        // notification
-                        sendNotification(tokens, "Info trafic", disruption_message)
+
+                        if (row) {
+                            logger.info("Disruption " + disruption_id + " is already in the database, not sending a notification")
+                            return
+                        } else {
+                            //                            logger.info("Sending notification for disruption " + disruption_id + ": " + disruption_message)
+                            logger.info("Disruption " + disruption_id + " is not in the database, sending a notification")
+                            getTokensAndSendNotifications(disruption_line, disruption_message)
+                        }
                     }
                 );
 
 
+
+
                 db.run(
-                    `INSERT INTO disruptions (id, status, line, start_date, end_date, severity, cause, message, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    `INSERT
+                        INTO disruptions    
+                        (id, disruption_id, impact_id, status, line, start_date, end_date, severity, cause, message, description)
+                    VALUES
+                    (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                     [
                         disruption_id,
+                        disruption_disruption_id,
+                        disruption_impact_id,
                         disruption_status,
                         disruption_line,
                         disruption_start_date,
@@ -194,7 +214,7 @@ function addAndSendNotification(disruption) {
                     ],
                     function (err) {
                         if (err) {
-                            return logger.error(err.message);
+                            return logger.error("Insert: " + err.message);
                         }
                         // get the last insert id
                         logger.debug(`A row has been inserted with rowid ${this.lastID}`);
@@ -241,6 +261,27 @@ async function launchCycle() {
     }
 }
 
+function getTokensAndSendNotifications(disruption_line, disruption_message) {
+
+    // get the affected users tokens and send them a notification
+    db.all(
+        `SELECT token FROM subscriptions WHERE line = ?`,
+        [disruption_line],
+        (err, rows) => {
+            if (err) {
+                return logger.error(err.message);
+            }
+            // make an array of all the tokens
+            const tokens = rows.map((row) => row.token);
+
+            if (tokens.length == 0) return logger.info("No one is subscribed to this line")
+            // notification
+            sendNotification(tokens, "Info trafic", disruption_message)
+        }
+    );
+
+}
+
 
 
 // app config
@@ -249,6 +290,12 @@ const app = express();
 // middlewares
 app.use(express.json());
 
+const auth = {
+    users: {},
+    challenge: true,
+}
+auth.users[config.adminUsername] = config.adminPassword
+app.use('/admin/subscriptions', basicAuth(auth))
 
 
 if (process.env.NODE_ENV == "production") {
@@ -267,7 +314,7 @@ if (process.env.NODE_ENV == "production") {
 app.post('/register', (req, res) => {
 
     // check if both token and line are present
-    if (req.body.token == null || req.body.line == null) return res.send("Error: token or line aren't present");
+    if (req.body.token == null || req.body.line == null) return res.send(400, "Error: token or line aren't present");
 
     let token = req.body.token;
     let line = req.body.line;
@@ -279,7 +326,7 @@ app.post('/register', (req, res) => {
         [token, line],
         (err) => {
             if (err) {
-                res.send("Error: " + err.message);
+                res.send(400, "Error: " + err.message);
                 return logger.error(err.message);
             }
 
@@ -331,7 +378,21 @@ app.get('/subscriptions/:token', (req, res) => {
 app.get('/disruptions', (req, res) => {
     db.all(
         `SELECT
-            *
+            disruptions.id AS id,
+            disruptions.disruption_id,
+            disruptions.impact_id,
+
+            disruptions.status,
+            disruptions.line,
+            disruptions.severity,
+            disruptions.cause,
+            disruptions.message AS disruption_title,
+            disruptions.description AS disruption_description,
+            disruptions.start_date,
+            disruptions.end_date,
+            lines.name,
+            lines.mode
+
         FROM
             disruptions
         INNER JOIN lines
@@ -349,7 +410,9 @@ app.get('/disruptions', (req, res) => {
 app.get('/lines', (req, res) => {
     db.all(
         `SELECT
-            *
+            id,
+            name,
+            mode
         FROM lines
         
         WHERE
@@ -388,9 +451,65 @@ app.get('/disruptions/:token', (req, res) => {
     );
 })
 
+app.get('/admin/subscriptions', (req, res) => {
+    db.all(
+        `SELECT
+            subscriptions.id AS subscription_id,
+            subscriptions.token AS token,
+            subscriptions.line,
+            subscriptions.date_subscribed,
+            lines.name,
+            lines.mode
+        FROM subscriptions
 
+        INNER JOIN lines
+            ON lines.id = subscriptions.line;
+        `,
+        (err, rows) => {
+            if (err) {
+                res.send("Error: " + err.message);
+                return logger.error(err.message);
+            }
+            res.send(rows);
+        }
+    );
+})
 
-app.listen(config.port, config.ip,  () => console.log(`TokenGetter, listening on port ${config.port}!`));
+app.delete('/admin/subscriptions/:token/:line', (req, res) => {
+    let token = req.params.token;
+    let line = req.params.line;
+
+    db.run(
+        `DELETE FROM subscriptions WHERE token = ? AND line = ?`,
+        [token, line],
+        (err) => {
+            if (err) {
+                res.send("Error: " + err.message);
+                return logger.error(err.message);
+            }
+            res.send("OK");
+        }
+    );
+})
+
+app.delete('/admin/subscriptions/:token', (req, res) => {
+    let token = req.params.token;
+    let line = req.params.line;
+
+    db.run(
+        `DELETE FROM subscriptions WHERE token = ?`,
+        [token, line],
+        (err) => {
+            if (err) {
+                res.send("Error: " + err.message);
+                return logger.error(err.message);
+            }
+            res.send("OK");
+        }
+    );
+})
+
+app.listen(config.port, config.ip, () => console.log(`TokenGetter, listening on port ${config.port}!`));
 
 
 // launch cycle every 2 minutes
