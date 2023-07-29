@@ -12,6 +12,7 @@
   "dependencies": {
     "@parse/node-apn": "^5.2.1",
     "express": "^4.18.2",
+    "express-basic-auth": "^1.2.1",
     "morgan": "^1.10.0",
     "node-html-markdown": "^1.3.0",
     "pino": "^8.14.1",
